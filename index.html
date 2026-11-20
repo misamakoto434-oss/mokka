@@ -9,6 +9,8 @@
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600;700&family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 
 <style>
   :root {
@@ -544,6 +546,18 @@
 <script>
 const ADMIN_PASS = "061208";
 
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyAUgzOPH4PSDxMMZLS42QR7l_3BoohPuPk",
+  authDomain: "mokamenu.firebaseapp.com",
+  projectId: "mokamenu",
+  storageBucket: "mokamenu.firebasestorage.app",
+  messagingSenderId: "862059243281",
+  appId: "1:862059243281:web:40375789ba7f3aff938eb0"
+};
+
+firebase.initializeApp(FIREBASE_CONFIG);
+const db = firebase.firestore();
+
 function createSnow() {
   const snowflakesCount = 30;
   for (let i = 0; i < snowflakesCount; i++) {
@@ -828,6 +842,76 @@ let map = null;
 let marker = null;
 const DEFAULT_LAT = 42.4907;
 const DEFAULT_LNG = 78.3936;
+
+async function syncAllDataFromCloud() {
+  try {
+    const storeRef = db.collection('moka_store');
+    const [menuDoc, promoDoc, featuresDoc] = await Promise.all([
+      storeRef.doc('menu').get(),
+      storeRef.doc('promo').get(),
+      storeRef.doc('features').get()
+    ]);
+
+    if (menuDoc.exists && Array.isArray(menuDoc.data().items)) {
+      menuData = menuDoc.data().items;
+      localStorage.setItem('moka_menu', JSON.stringify(menuData));
+    } else {
+      await storeRef.doc('menu').set({ items: DEFAULT_MENU });
+    }
+
+    if (promoDoc.exists && Array.isArray(promoDoc.data().items)) {
+      promoData = promoDoc.data().items;
+      localStorage.setItem('moka_promo', JSON.stringify(promoData));
+    } else {
+      await storeRef.doc('promo').set({ items: DEFAULT_PROMOS });
+    }
+
+    if (featuresDoc.exists && Array.isArray(featuresDoc.data().items)) {
+      featuresData = featuresDoc.data().items;
+      localStorage.setItem('moka_features', JSON.stringify(featuresData));
+    } else {
+      await storeRef.doc('features').set({ items: DEFAULT_FEATURES });
+    }
+
+    if (!menuData.some(i => i.category === activeCat) && activeCat !== 'Все') {
+      activeCat = 'Все';
+    }
+
+    renderPromos();
+    renderCategories();
+    renderMenu();
+    renderAdminLists();
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+async function persistCollection(docId, keyName, items) {
+  localStorage.setItem(keyName, JSON.stringify(items));
+  await db.collection('moka_store').doc(docId).set({ items });
+}
+
+function compressImageFile(file, maxWidth = 800, quality = 0.72) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = function(event) {
+      const img = new Image();
+      img.onload = function() {
+        const scale = Math.min(1, maxWidth / img.width);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = reject;
+      img.src = event.target.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
 
 function checkWorkStatus() {
   const now = new Date();
@@ -1151,7 +1235,7 @@ window.resetMenuForm = function() {
   document.getElementById('cancelEditBtn').style.display = 'none';
 };
 
-window.saveMenuItem = function() {
+window.saveMenuItem = async function() {
   const editId = document.getElementById('editItemId').value;
   const cat = document.getElementById('newCat').value.trim();
   const name = document.getElementById('newName').value.trim();
@@ -1165,120 +1249,106 @@ window.saveMenuItem = function() {
     return;
   }
 
-  const processAndSave = (imgUrl) => {
-    if (editId) {
-      const index = menuData.findIndex(m => m.id == editId);
-      if (index > -1) {
-        menuData[index] = {
-          ...menuData[index],
-          category: cat,
-          name,
-          price,
-          weight,
-          desc,
-          img: imgUrl || menuData[index].img
-        };
-        alert('Блюдо успешно обновлено!');
-      }
-    } else {
-      const newItem = {
-        id: Date.now(),
+  let imgUrl = editId ? null : P(302899);
+  if (fileInput.files && fileInput.files[0]) {
+    imgUrl = await compressImageFile(fileInput.files[0]);
+  }
+
+  if (editId) {
+    const index = menuData.findIndex(m => m.id == editId);
+    if (index > -1) {
+      menuData[index] = {
+        ...menuData[index],
         category: cat,
         name,
         price,
         weight,
         desc,
-        img: imgUrl || P(302899)
+        img: imgUrl || menuData[index].img
       };
-      menuData.push(newItem);
-      alert('Блюдо успешно добавлено в меню!');
     }
-
-    localStorage.setItem('moka_menu', JSON.stringify(menuData));
-    resetMenuForm();
-    renderCategories();
-    renderMenu();
-    renderAdminLists();
-  };
-
-  if (fileInput.files && fileInput.files[0]) {
-    const reader = new FileReader();
-    reader.onload = function(e) { processAndSave(e.target.result); };
-    reader.readAsDataURL(fileInput.files[0]);
   } else {
-    processAndSave(editId ? null : P(302899));
+    menuData.push({
+      id: Date.now(),
+      category: cat,
+      name,
+      price,
+      weight,
+      desc,
+      img: imgUrl
+    });
   }
+
+  await persistCollection('menu', 'moka_menu', menuData);
+  resetMenuForm();
+  renderCategories();
+  renderMenu();
+  renderAdminLists();
+  alert(editId ? 'Блюдо обновлено для всех пользователей!' : 'Блюдо добавлено для всех пользователей!');
 };
 
-window.deleteMenuItem = function(id) {
+window.deleteMenuItem = async function(id) {
   if (confirm('Точно удалить это блюдо?')) {
     menuData = menuData.filter(m => m.id !== id);
-    localStorage.setItem('moka_menu', JSON.stringify(menuData));
+    await persistCollection('menu', 'moka_menu', menuData);
     renderCategories();
     renderMenu();
     renderAdminLists();
   }
 };
 
-window.addNewPromoItem = function() {
+window.addNewPromoItem = async function() {
   const title = document.getElementById('promoTitleInput').value.trim();
   const desc = document.getElementById('promoDescInput').value.trim();
   const fileInput = document.getElementById('promoImageFile');
 
   if (!title || !desc) { alert('Заполните заголовок и описание акции!'); return; }
 
-  const savePromo = (imgUrl) => {
-    promoData.push({ id: Date.now(), title, desc, img: imgUrl || P(4342445) });
-    localStorage.setItem('moka_promo', JSON.stringify(promoData));
-    renderPromos();
-    renderAdminLists();
-    alert('Акция успешно опубликована!');
-  };
-
+  let imgUrl = P(4342445);
   if (fileInput.files && fileInput.files[0]) {
-    const reader = new FileReader();
-    reader.onload = function(e) { savePromo(e.target.result); };
-    reader.readAsDataURL(fileInput.files[0]);
-  } else {
-    savePromo(P(4342445));
+    imgUrl = await compressImageFile(fileInput.files[0]);
   }
+
+  promoData.push({ id: Date.now(), title, desc, img: imgUrl });
+  await persistCollection('promo', 'moka_promo', promoData);
+  document.getElementById('promoTitleInput').value = '';
+  document.getElementById('promoDescInput').value = '';
+  fileInput.value = '';
+  renderPromos();
+  renderAdminLists();
+  alert('Акция опубликована для всех пользователей!');
 };
 
-window.deletePromoItem = function(id) {
+window.deletePromoItem = async function(id) {
   promoData = promoData.filter(p => p.id !== id);
-  localStorage.setItem('moka_promo', JSON.stringify(promoData));
+  await persistCollection('promo', 'moka_promo', promoData);
   renderPromos();
   renderAdminLists();
 };
 
-window.addNewFeatureItem = function() {
+window.addNewFeatureItem = async function() {
   const title = document.getElementById('featureTitleInput').value.trim();
   const fileInput = document.getElementById('featureImageFile');
 
   if (!title) { alert('Введите название услуги или атмосферы!'); return; }
 
-  const saveFeature = (imgUrl) => {
-    featuresData.push({ id: Date.now(), title, img: imgUrl || P(1571458) });
-    localStorage.setItem('moka_features', JSON.stringify(featuresData));
-    renderPromos();
-    renderAdminLists();
-    document.getElementById('featureTitleInput').value = '';
-    document.getElementById('featureImageFile').value = '';
-    alert('Элемент атмосферы успешно добавлен!');
-  };
-
+  let imgUrl = P(1571458);
   if (fileInput.files && fileInput.files[0]) {
-    const reader = new FileReader();
-    reader.onload = function(e) { saveFeature(e.target.result); };
-    reader.readAsDataURL(fileInput.files[0]);
-  } else {
-    saveFeature(P(1571458));
+    imgUrl = await compressImageFile(fileInput.files[0]);
   }
+
+  featuresData.push({ id: Date.now(), title, img: imgUrl });
+  await persistCollection('features', 'moka_features', featuresData);
+  document.getElementById('featureTitleInput').value = '';
+  fileInput.value = '';
+  renderPromos();
+  renderAdminLists();
+  alert('Элемент атмосферы добавлен для всех пользователей!');
 };
 
-window.deleteFeatureItem = function(id) {
+window.deleteFeatureItem = async function(id) {
   featuresData = featuresData.filter(f => f.id !== id);
-  localStorage.setItem('moka_features', JSON.stringify(featuresData));
+  await persistCollection('features', 'moka_features', featuresData);
   renderPromos();
   renderAdminLists();
 };
@@ -1349,6 +1419,7 @@ initLanguageDropdown();
 renderPromos();
 renderCategories();
 renderMenu();
+syncAllDataFromCloud();
 </script>
 <script src="https://translate.google.com/translate_a/element.js?cb=googleTranslateElementInit"></script>
 </body>
